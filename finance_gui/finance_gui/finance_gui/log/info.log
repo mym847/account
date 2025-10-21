@@ -1,0 +1,6 @@
+2025-10-18 21:21:18,071 - view.py[line:1286] - INFO: 导入的excel文件路径:
+2025-10-18 21:21:18,073 - view.py[line:1291] - INFO: 正在读取excel文件内容
+2025-10-18 21:21:18,117 - view.py[line:1308] - ERROR: 导入excel数据出错openpyxl does not support  file format, please check you can open it with Excel first. Supported formats are: .xlsx,.xlsm,.xltx,.xltm
+2025-10-18 21:21:35,975 - view.py[line:1564] - INFO: 导出的excel文件路径:C:/Users/14222/Desktop/收支记录 2025-10-18-21-21-28.xlsx
+2025-10-18 21:21:35,976 - view.py[line:1585] - INFO: 导出数据到excel文件:C:/Users/14222/Desktop/收支记录 2025-10-18-21-21-28.xlsx
+2025-10-18 21:21:36,061 - view.py[line:1588] - INFO: 导出数据到excel成功！

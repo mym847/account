@@ -1,0 +1,1768 @@
+import os
+import sys
+import sqlite3
+import time
+import traceback
+import tkinter as tk
+from tkinter import ttk
+from tkinter import messagebox as mBox
+from tkinter.scrolledtext import ScrolledText
+from tkinter import END
+from tkinter.filedialog import askopenfilename, asksaveasfilename
+import json
+base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(base_dir)
+from conf import settings
+from core.Mytools import changeStrToDate
+from core import excel
+from core.logger import logger
+
+import ttkbootstrap as tb
+from ttkbootstrap.constants import *
+
+"""这是修改的"""
+from bin.StatisticsFrame import StatisticsFrame
+"""修改结束"""
+class BaseFrame(tb.LabelFrame):
+    """所有功能模块的父类"""
+    def __init__(self, master=None):
+        tb.LabelFrame.__init__(self, master)
+        # 创建聊天记录查看页面
+        self.root = tb.LabelFrame(master, text='支出记录')  # 定义内部变量root
+        self.pwin = master  # 父容器对象引用，方便后面调用父容器实例方法
+        self.root.grid()
+        self.select_id = tb.IntVar()  # 要定位的id  ，用于定位数据库中的记账记录
+        self.current_id = None  # 用于记录当前选中id
+        self.db_v = "v_payments_info"  # 数据库视图名称
+        self.db_table = "payments"  # 数据库表名
+        self.account = tb.StringVar()  # 账户下拉框数据
+        self.seller = tb.StringVar()  # 商家/交易对象下拉框数据
+        self.category_p = tb.StringVar()  # 类别下拉框数据,一级分类
+        self.category_c = tb.StringVar()  # 类别下拉框数据，二级分类
+        self.member = tb.StringVar()  # 成员/使用者下拉框数据
+        self.title = tb.StringVar()  # 事项
+        self.note_date = tb.StringVar()  # 日期
+        self.remark = tb.StringVar()  # 备注
+        self.money = tb.DoubleVar()  # 金额
+        self.search_key = tb.StringVar()  # 搜索关键字
+        self.search_mode = tb.StringVar()  # 搜索模式  字段
+        self.search_mode.set("title")
+        self.order_mode = tb.StringVar()  # 排序模式  id, note_date, money
+        self.order_mode.set("id")
+        self.order_option = tb.StringVar()  # 排序参数  asc 升序  desc 降序
+        self.order_option.set("asc")
+        self.entry_flag = tb.BooleanVar()  # 刷新输入区  True 每次提交完都会将输入区内容清空， 如果要重复输入重复日期 就很不方便
+        self.entry_flag.set(True)
+        # 链接数据库
+        self.conn = sqlite3.connect(settings.DB_PATH)
+        self.c = self.conn.cursor()
+        # self.createPage()
+
+    def createPage(self):
+        self.f_top = tb.Frame(self.root)
+        self.f_title = tb.Frame(self.root)
+        self.f_content = tb.Frame(self.root)
+        self.f_bottom = tb.Frame(self.root)
+        self.f_top.pack(side=tb.TOP, fill=tb.BOTH, expand=True)
+        self.f_bottom.pack(side=tb.BOTTOM, fill=tb.BOTH, expand=True)
+        self.f_title.pack(side=tb.TOP, fill=tb.BOTH, expand=True)
+        self.f_content.pack(side=tb.LEFT, fill=tb.BOTH, expand=True)
+
+        # 标签
+        tb.Label(self.f_title, text="事项").grid(row=0, column=1)
+        tb.Label(self.f_title, text="日期").grid(row=0, column=2)  # 格式：'%Y-%m-%d %H:%M:%S'
+        tb.Label(self.f_title, text="备注").grid(row=0, column=3, columnspan=2)
+        tb.Label(self.f_title, text="金额").grid(row=0, column=5)
+        tb.Label(self.f_title, text="账户/支付方式").grid(row=2, column=1)
+        tb.Label(self.f_title, text="交易对象").grid(row=2, column=2)  # 格式：'%Y-%m-%d %H:%M:%S'
+
+        self.entry_title = tb.Entry(self.f_title, textvariable=self.title, width=20)
+        self.entry_title.grid(row=1, column=1, sticky=tb.EW, padx=2)
+        self.entry_date = tb.Entry(self.f_title, textvariable=self.note_date, width=20)  # 输入事项框
+        self.entry_date.grid(row=1, column=2, sticky=tb.EW, padx=2)
+        self.entry_remark = tb.Entry(self.f_title, textvariable=self.remark, width=40)  # 输入备注框
+        self.entry_remark.grid(row=1, column=3, columnspan=2, sticky=tb.EW, padx=2)
+        self.entry_money = tb.Entry(self.f_title, textvariable=self.money, width=20)  # 输入金额框
+        self.entry_money.grid(row=1, column=5, sticky=tb.EW, padx=2)
+        self.buttun_create_note = tb.Button(self.f_title, text="创建", command=self.addNote, bootstyle="success-outline")  # 创建记账记录 按钮
+        self.buttun_create_note.grid(row=1, column=6, sticky=tb.EW, padx=2)
+
+        # 账户框
+        self.chosen_account = tb.Combobox(self.f_title, textvariable=self.account)
+        self.chosen_account.grid(row=3, column=1, sticky=tb.EW, padx=2)
+
+        # 交易对象框
+        self.chosen_seller = tb.Combobox(self.f_title, textvariable=self.seller)
+        self.chosen_seller.grid(row=3, column=2, sticky=tb.EW, padx=2)
+
+        # # 创建标签签 按钮
+        # tb.Button(self.f_title, text="新建标签", command=self.create_new_tag).grid(row=3, column=6, sticky=tb.EW, padx=2)
+
+        self.label_notes_info = tb.Label(self.f_content)  # 所有记录总数信息
+        self.label_notes_info.grid(row=0, column=0, columnspan=2, pady=5)
+        # 记录显示区
+        # 详情
+        self.txt_note = ScrolledText(self.f_content, wrap=tb.WORD, width=100, height=32)
+        self.txt_note.grid(row=1, column=0)
+        # 总体分析
+        self.info_note = ScrolledText(self.f_content, wrap=tb.WORD, width=35, height=32)
+        self.info_note.grid(row=1, column=1)
+        self.f_radios = tb.Frame(self.f_bottom)  # 防止单选项区域  即根据什么搜索的选项
+        self.f_radios.grid(row=0, columnspan=9)
+        tb.Label(self.f_radios, text="设置:").grid(row=0, column=0)
+        tb.Radiobutton(self.f_radios, text="根据ID排序", value="id", variable=self.order_mode, command=self.searchNotes).grid(row=0, column=1)
+        tb.Radiobutton(self.f_radios, text="根据日期排序", value="note_date", variable=self.order_mode, command=self.searchNotes).grid(row=1, column=1)
+        tb.Radiobutton(self.f_radios, text="根据金额排序", value="money", variable=self.order_mode, command=self.searchNotes).grid(row=2, column=1)
+        tb.Radiobutton(self.f_radios, text="升序", value="asc", variable=self.order_option, command=self.searchNotes).grid(row=0, column=2)
+        tb.Radiobutton(self.f_radios, text="降序", value="desc", variable=self.order_option, command=self.searchNotes).grid(row=1, column=2)
+        tb.Radiobutton(self.f_radios, text="刷新输入区 ", value=True, variable=self.entry_flag).grid(row=0, column=3)
+        tb.Radiobutton(self.f_radios, text="不刷新输入区", value=False, variable=self.entry_flag).grid(row=1, column=3)
+
+        tb.Label(self.f_radios, text="搜索方式:").grid(row=4, column=0)
+        tb.Radiobutton(self.f_radios, text="根据事项", value="title", variable=self.search_mode).grid(row=4, column=1)
+        tb.Radiobutton(self.f_radios, text="根据日期", value="note_date", variable=self.search_mode).grid(row=4, column=2)
+        tb.Radiobutton(self.f_radios, text="根据备注", value="remark", variable=self.search_mode).grid(row=4, column=3)
+        tb.Radiobutton(self.f_radios, text="根据金额", value="money", variable=self.search_mode).grid(row=4, column=4)
+        tb.Radiobutton(self.f_radios, text="根据账户/支付方式", value="account", variable=self.search_mode).grid(row=4, column=5)
+        tb.Radiobutton(self.f_radios, text="根据交易方", value="seller", variable=self.search_mode).grid(row=4, column=6)
+
+        tb.Label(self.f_bottom, text="搜索内容:").grid(row=1, column=0)
+        tb.Entry(self.f_bottom, textvariable=self.search_key, width=50).grid(row=1, column=1, columnspan=4)
+        tb.Button(self.f_bottom, text="搜索", command=self.searchNotes,bootstyle="info-outline").grid(row=1, column=5)
+        tb.Button(self.f_bottom, text="查看所有", command=self.showAll,bootstyle="primary-outline").grid(row=1, column=6)
+        tb.Label(self.f_bottom, text="定位编号:").grid(row=2, column=0)
+        tb.Entry(self.f_bottom, textvariable=self.select_id,).grid(row=2, column=1)
+        tb.Button(self.f_bottom, text="定位", command=self.locateNote,bootstyle="info-outline").grid(row=2, column=2)
+        self.buttun_cancel = tb.Button(self.f_bottom, text="取消修改", command=self.cancelUpdate,bootstyle="warning-outline")
+        self.buttun_cancel.grid(row=2, column=4)
+        tb.Button(self.f_bottom, text="删除记录", command=self.delNote,bootstyle="danger-outline").grid(row=2, column=5)
+        for child in self.f_radios.winfo_children():
+            child.grid_configure(padx=2, pady=4, sticky=tb.EW)
+        for child in self.f_bottom.winfo_children():
+            child.grid_configure(padx=2, pady=4, sticky=tb.EW)
+
+        # self.set_combox_values()
+        self.showAll()
+
+    def ensure_income_other_options(self):
+        """确保收入模块下拉框中存在“其他”（账户/支付方式、收入分类）"""
+        try:
+            # 账户/支付方式：添加“其他”
+            self.c.execute("select 1 from accounts where title=?", ("其他",))
+            if not self.c.fetchone():
+                self.c.execute("insert into accounts (title) values (?)", ("其他",))
+            # 收入分类（一级分类）：添加“其他”
+            self.c.execute("select 1 from income_categorys where title=? and pid is null", ("其他",))
+            if not self.c.fetchone():
+                self.c.execute("insert into income_categorys (title) values (?)", ("其他",))
+            self.conn.commit()
+        except Exception:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+
+    def get_combox_values_from_db(self, table_name):
+        """用于从数据库获取下拉框的值"""
+        self.c.execute("select title from %s" % table_name)
+        result = []
+        # [('日常',), ('交通',), ('住房',)]
+        for item in self.c.fetchall():
+            result.append(item[0])
+        return tuple(result)
+
+    def set_combox_values(self):
+        # 用于设置下拉框的values
+        accounts = self.get_combox_values_from_db("accounts")
+        sellers = self.get_combox_values_from_db("sellers")
+        members = self.get_combox_values_from_db("members")
+        self.chosen_account['values'] = accounts
+        self.chosen_seller['values'] = sellers
+        comboxs = [self.chosen_account, self.chosen_seller]
+        for item in comboxs:
+            item.current(0)  # 设置初始显示值，值为元组['values']的下标
+            item.config(state='readonly')  # 设为只读模式
+
+    def addNote(self):
+        """新增/修改记账记录"""
+        # list = [self.title, self.note_date, self.remark, self.money, self.account, self.seller]
+        # for item in list:
+        #     print(item.get(), end=" ")
+        # print()
+        time_now = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())  # 当前时间
+        note_date = self.note_date.get()
+        note_date = changeStrToDate(note_date)
+        if note_date is None:
+            note_date = time.strftime('%Y-%m-%d', time.localtime())
+            self.note_date.set(note_date)
+        title = self.title.get()
+        remark = self.remark.get()
+        try:
+            money = self.money.get()
+        except Exception:
+            mBox.showerror('数据格式错误', '金额输入数据格式错误！')
+            return
+        self.c.execute("select id from accounts where title=?", (self.account.get(),))
+        account_id = self.c.fetchall()[0][0]
+        self.c.execute("select id from sellers where title=?", (self.seller.get(),))
+        seller_id = self.c.fetchall()[0][0]
+        if not self.current_id:
+            # 新增
+            sql = "insert into %s(note_date, title, remark, money, account_id, seller_id, create_time) values(?,?,?,?,?,?,?)" % self.db_table
+            self.c.execute(sql, (note_date, title, remark, money, account_id, seller_id, time_now))
+        else:
+            # 修改
+            sql = "update %s set note_date=?,title=?,remark=?,money=?,account_id=?,seller_id=?,modify_time=? where id=?" % self.db_table
+            self.c.execute(sql, (note_date, title, remark, money, account_id, seller_id, time_now, self.current_id))
+        self.conn.commit()
+        self.clearMsg()
+        self.showAll()
+
+ # 通知预算页面数据已变化，触发刷新
+        try:
+            toplevel = self.root.winfo_toplevel()
+            toplevel.event_generate('<<PaymentsChanged>>')
+        except Exception:
+            pass
+        # 通知预算页面数据已变化，触发刷新
+        try:
+            toplevel = self.root.winfo_toplevel()
+            toplevel.event_generate('<<PaymentsChanged>>')
+        except Exception:
+            pass
+
+
+    def showAll(self):
+        """展示所有交易记录"""
+        # print(self.db_v, self.db_table)
+        # 显示交易分析汇总信息
+        order_mode = self.order_mode.get()  # 根据什么排序
+        order_key = self.order_option.get()  # 排序
+        self.c.execute("select count(money),sum(money),avg(money),max(money),min(money) from %s order by %s %s;" % (self.db_v, order_mode, order_key))
+        result = self.c.fetchone()  # 总信息
+        # print(result)
+        self.info_note.delete("0.0", END)
+        self.info_note.insert(tb.INSERT, "共进行了 %s 笔交易\n交易总金额:%s \n平均交易金额:%s \n最大交易金额:%s \n最小交易金额:%s \n\n" % result)
+        show_dict = {"account": "按账户/支付方式 统计：", "seller": "按交易方 统计："}
+        for item in ["account", "seller"]:
+            sql = "select %s,count(money),sum(money),avg(money),max(money),min(money) from %s group by %s;" % (item, self.db_v, item)
+            # print(sql)
+            self.c.execute(sql)
+            results = self.c.fetchall()
+            self.info_note.insert(tb.INSERT, "\n%s\n" % show_dict[item])
+            for result in results:
+                self.info_note.insert(tb.INSERT, "%s 相关共 %s 笔交易\n交易总金额:%s \n平均交易金额:%s \n最大交易金额:%s \n最小交易金额:%s \n" % result)
+        # 显示交易详情
+        self.txt_note.delete("0.0", END)  # 清空显示区
+        sql = "select id,note_date,title,remark,money,account,seller from %s order by %s %s;" % (self.db_v, order_mode, order_key)
+        self.c.execute(sql)
+        result = self.c.fetchall()
+        for item in result:
+            msg = "id:%s\n日期:%s, 事项:%s, 备注:%s, 金额:%s, \n账户/支付方式:%s, 交易方:%s\n\n" % item
+            self.txt_note.insert(tb.INSERT, msg)
+        self.clearMsg()
+        self.label_notes_info.config(text="当前共有 %s 条记账记录！" % len(result))  # 显示记账记录数
+
+    def searchNotes(self):
+        """用于搜索便签"""
+        # 获取搜索关键字
+        search_key = self.search_key.get()  # 搜索词
+        search_mode = self.search_mode.get()  # 搜索模式  “content” 事项和备注 “note_date” 时间
+        order_mode = self.order_mode.get()  # 根据什么排序
+        order_key = self.order_option.get()  # 排序
+        # 显示交易详情
+        self.txt_note.delete("0.0", END)
+        self.info_note.delete("0.0", END)
+        # 获取交易分析汇总信息
+        sql = """select count(money),sum(money),avg(money),max(money),min(money) from %s
+                where %s like ? order by %s %s;""" % (self.db_v, search_mode, order_mode, order_key)
+        self.c.execute(sql, ("%%%s%%" % search_key,))
+        result = self.c.fetchone()  # 总信息
+        self.info_note.delete("0.0", END)
+        self.info_note.insert(tb.INSERT, "共进行了 %s 笔交易\n交易总金额:%s \n平均交易金额:%s \n最大交易金额:%s \n最小交易金额:%s \n\n" % result)
+        show_dict = {"account": "按账户/支付方式 统计：", "seller": "按交易方 统计："}
+        for item in ["account", "seller"]:
+            sql = """select %s,count(money),sum(money),avg(money),max(money),min(money) from %s
+              where %s like ? group by %s""" % (item, self.db_v, search_mode, item)
+            self.c.execute(sql, ("%%%s%%" % search_key,))
+            results = self.c.fetchall()
+            self.info_note.insert(tb.INSERT, "\n%s\n" % show_dict[item])
+            for result in results:
+                msg = "%s 相关共 %s 笔交易\n交易总金额:%s \n平均交易金额:%s \n最大交易金额:%s \n最小交易金额:%s \n" % result
+                self.info_note.insert(tb.INSERT, msg)
+        # 获取交易详情
+        sql = """select id,note_date,title,remark,money,account,seller
+                from %s where %s like ? order by %s %s;""" % (self.db_v, search_mode, order_mode, order_key)
+        self.c.execute(sql, ("%%%s%%" % search_key,))
+        # 显示交易详情信息
+        result = self.c.fetchall()
+        self.clearMsg()
+        if not result:  # 没有搜索到结果
+            self.label_notes_info.config(text="未搜索到符合条件的记账记录！")
+        else:
+            self.label_notes_info.config(text="共搜索到符合条件的 %s 条记账记录！" % len(result))  # 显示找到多少条
+            for item in result:
+                msg = "id:%s\n日期:%s, 事项:%s, 备注:%s, 金额:%s, \n账户/支付方式:%s, 交易方:%s\n\n" % item
+                self.txt_note.insert(tb.INSERT, msg)
+
+    def locateNote(self):
+        """用于通过id定位便签并将其填充到对应控件内"""
+        # 定位要修改的便签
+        select_id = self.select_id.get()
+        # print("select_id:", select_id)
+        sql = "select id,note_date, title, remark, money, account, seller from %s where id=?" % self.db_v
+        self.c.execute(sql, (select_id,))
+        note_item = self.c.fetchone()
+        # print("note_item:", note_item)
+        if note_item:
+            self.current_id = select_id  # 记录当前选中的id
+            self.title.set(note_item[2])
+            self.note_date.set(note_item[1])
+            self.remark.set(note_item[3])
+            self.money.set(note_item[4])
+            self.account.set(note_item[5])
+            self.seller.set(note_item[6])
+            self.buttun_create_note.config(text="修改")
+            self.txt_note.delete("0.0", END)
+            self.info_note.delete("0.0", END)
+            self.label_notes_info.config(text="正在修改id为%s的记账记录！" % select_id)
+        else:
+            self.clearMsg()
+            self.txt_note.delete("0.0", END)
+            self.info_note.delete("0.0", END)
+            self.buttun_create_note.config(text="创建")
+            self.label_notes_info.config(text="数据库中未找到id为:%s的记账记录！" % select_id)
+
+    def cancelUpdate(self):
+        """用于取消修改便签内容操作"""
+        # 还原标签状态为新增便签
+        self.clearMsg()
+        self.txt_note.delete("0.0", END)
+        self.buttun_create_note.config(text="创建")
+
+    def delNote(self):
+        """用于删除记账记录"""
+        # 只进行逻辑删除
+        sql = "update %s set is_delete=1 where id=?" % self.db_table
+        self.c.execute(sql, (self.current_id,))
+        self.conn.commit()
+        print("删除id:%s 的记账记录！" % self.current_id)
+        self.clearMsg()
+        # 刷新结果
+        self.showAll()
+
+    def clearMsg(self):
+        """用于将显示区的控件信息恢复最初状态"""
+        self.current_id = None
+        self.buttun_create_note.config(text="创建")
+        self.label_notes_info.config(text="")
+        if self.entry_flag.get() is True:
+            self.title.set("")
+            self.note_date.set("")
+            self.remark.set("")
+            self.money.set(0.0)
+        # logger.debug("current_id:%s" % self.current_id)
+        # logger.debug("entry_flag:%s" % self.entry_flag.get())
+
+
+class BaseFrameFull(BaseFrame):
+    """支出和收入功能模块的父类"""
+
+    def createPage(self):
+        super().createPage()
+        # 在收入模块加载前，确保存在“其他”选项（账户/支付方式、收入分类）
+        if self.db_table == "incomes":
+            self.ensure_income_other_options()
+        tb.Label(self.f_title, text="交易对象").grid(row=2, column=2)  # 格式：'%Y-%m-%d %H:%M:%S'
+        tb.Label(self.f_title, text="分类").grid(row=2, column=3, columnspan=2)
+        tb.Label(self.f_title, text="成员/使用者").grid(row=2, column=5)
+
+        self.buttun_create_note = tb.Button(self.f_title, text="创建", command=self.addNote)  # 创建记账记录 按钮
+        self.buttun_create_note.grid(row=1, column=6, sticky=tb.EW, padx=2)
+
+        # 类别框
+        self.chosen_category1 = tb.Combobox(self.f_title, textvariable=self.category_p)
+        self.chosen_category1.grid(row=3, column=3, sticky=tb.EW, padx=2)
+        self.chosen_category1.bind("<<ComboboxSelected>>", self.resetChosen_category2)  # 类别框2绑定与类别框1联动
+
+        # 类别框2
+        self.chosen_category2 = tb.Combobox(self.f_title, textvariable=self.category_c)
+        self.chosen_category2.grid(row=3, column=4, sticky=tb.EW, padx=2)
+
+        # 成员/使用者框
+        self.chosen_member = tb.Combobox(self.f_title, textvariable=self.member)
+        self.chosen_member.grid(row=3, column=5, sticky=tb.EW, padx=2)
+
+        tb.Radiobutton(self.f_radios, text="根据一级分类", value="category_p", variable=self.search_mode).grid(row=4, column=7)
+        tb.Radiobutton(self.f_radios, text="根据二级分类", value="category_c", variable=self.search_mode).grid(row=4, column=8)
+        tb.Radiobutton(self.f_radios, text="根据使用者", value="member", variable=self.search_mode).grid(row=4, column=9)
+
+        self.set_combox_values()
+        self.showAll()
+
+    def get_combox_values_from_db(self, table_name):
+        """用于从数据库获取下拉框的值"""
+        self.c.execute("select title from %s" % table_name)
+        result = []
+        # [('日常',), ('交通',), ('住房',)]
+        for item in self.c.fetchall():
+            result.append(item[0])
+        return tuple(result)
+
+    def set_combox_values(self):
+        # 用于设置下拉框的values
+        accounts = self.get_combox_values_from_db("accounts")
+        sellers = self.get_combox_values_from_db("sellers")
+        members = self.get_combox_values_from_db("members")
+        if self.db_table == "payments":
+            category_table = "pay_categorys"
+        else:
+            category_table = "income_categorys"
+        self.c.execute("select title from %s where pid is null" % category_table)
+        categorys_p = []
+        result = self.c.fetchall()
+        if result:
+            for item in result:
+                categorys_p.append(item[0])
+        categorys_p = tuple(categorys_p)
+        # print("categorys_p:", categorys_p)
+        if categorys_p:
+            self.c.execute("select id from %s where title=?" % category_table, (categorys_p[0],))
+            pid = self.c.fetchall()[0][0]
+            # print("pid:", pid)
+            self.c.execute("select title from %s where pid=?" % category_table, (pid,))
+            categorys_c = []
+            for item in self.c.fetchall():
+                categorys_c.append(item[0])
+            categorys_c = tuple(categorys_c)
+            if not categorys_c:
+                categorys_c = ("",)
+        else:
+            categorys_c = ("",)
+        # print(categorys_c)
+
+        self.chosen_account['values'] = accounts
+        self.chosen_seller['values'] = sellers
+        self.chosen_category1['values'] = categorys_p
+        self.chosen_category2['values'] = categorys_c
+        self.chosen_member['values'] = members
+        comboxs = [self.chosen_account, self.chosen_seller, self.chosen_category1, self.chosen_category2, self.chosen_member]
+        for item in comboxs:
+            item.current(0)  # 设置初始显示值，值为元组['values']的下标
+            item.config(state='readonly')  # 设为只读模式
+
+    def resetChosen_category2(self, event):
+        """用于实现类别框2与类别框1联动，根据类别框1所选值更新类别框2的值
+        event 默认触发就会传递，无实际意义
+        """
+        self.chosen_category2.config(state="normal")  # 设为可写
+        category_p = self.category_p.get()
+        if self.db_table == "payments":
+            category_table = "pay_categorys"
+        else:
+            category_table = "income_categorys"
+        if category_p:
+            self.c.execute("select id from %s where title=?" % category_table, (category_p,))
+            pid = self.c.fetchone()[0]
+            logger.debug("pid: type:%s ,value:%s" % (type(pid), pid))
+            self.c.execute("select title from %s where pid is ?" % category_table, (pid,))
+            categorys_c = []
+            for item in self.c.fetchall():
+                categorys_c.append(item[0])
+            categorys_c = tuple(categorys_c)
+            if not categorys_c:
+                categorys_c = ("",)
+        else:
+            categorys_c = ("",)
+        # print(categorys_c)
+        self.chosen_category2["values"] = categorys_c
+        self.chosen_category2.current(0)
+        self.chosen_category2.config(state="readonly")  # 设为可写
+
+    def addNote(self):
+        """新增/修改记账记录"""
+        # list = [self.title, self.note_date, self.remark, self.money, self.account, self.seller, self.category_p, self.category_c, self.member]
+        # for item in list:
+        #     print(item.get(), end=" ")
+        # print()
+        time_now = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())  # 当前时间
+        note_date = self.note_date.get()
+        note_date = changeStrToDate(note_date)
+        if note_date is None:
+            note_date = time.strftime('%Y-%m-%d', time.localtime())
+            self.note_date.set(note_date)
+        title = self.title.get()
+        remark = self.remark.get()
+        try:
+            money = self.money.get()
+        except Exception:
+            mBox.showerror('数据格式错误', '金额输入数据格式错误！')
+            return
+        self.c.execute("select id from accounts where title=?", (self.account.get(),))
+        account_id = self.c.fetchall()[0][0]
+        self.c.execute("select id from sellers where title=?", (self.seller.get(),))
+        temp = self.c.fetchall()
+        if temp:
+            seller_id = temp[0][0]
+        else:
+            seller_id = None
+        if self.db_table == "payments":
+            category_table = "pay_categorys"
+        else:
+            category_table = "income_categorys"
+
+        self.c.execute("select id from %s where title=?" % category_table, (self.category_p.get(),))
+        category_pid = self.c.fetchall()[0][0]
+        self.c.execute("select id from %s where title=? and pid=?" % category_table, (self.category_c.get(), category_pid))
+        categorys_cid = self.c.fetchall()
+        if categorys_cid:
+            # 有内容
+            category_cid = categorys_cid[0][0]
+        else:
+            # 数据库中无
+            category_cid = None
+            # category_cid = 0
+        self.c.execute("select id from members where title=?", (self.member.get(),))
+        member_id = self.c.fetchall()[0][0]
+        if not self.current_id:
+            # 新增
+            sql = "insert into %s(note_date, title, remark, money, account_id, seller_id, category_pid, category_cid, member_id, create_time) values(?,?,?,?,?,?,?,?,?,?)" % self.db_table
+            self.c.execute(sql, (note_date, title, remark, money, account_id, seller_id, category_pid, category_cid, member_id, time_now))
+        else:
+            # 修改
+            sql = "update %s set note_date=?,title=?,remark=?,money=?,account_id=?,seller_id=?,category_pid=?,category_cid=?,member_id=?,modify_time=? where id=?" % self.db_table
+            self.c.execute(sql, (note_date, title, remark, money, account_id, seller_id, category_pid, category_cid, member_id, time_now, self.current_id))
+        self.conn.commit()
+        self.clearMsg()
+        self.showAll()
+
+    def showAll(self):
+        """展示所有交易记录"""
+        # print(self.db_v, self.db_table)
+        # 显示交易分析汇总信息
+        order_mode = self.order_mode.get()  # 根据什么排序
+        order_key = self.order_option.get()  # 排序
+        self.c.execute("select count(money),sum(money),avg(money),max(money),min(money) from %s order by %s %s;" % (self.db_v, order_mode, order_key))
+        result = self.c.fetchone()  # 总信息
+        # print(result)
+        self.info_note.delete("0.0", END)
+        self.info_note.insert(tb.INSERT, "共进行了 %s 笔交易\n交易总金额:%s \n平均交易金额:%s \n最大交易金额:%s \n最小交易金额:%s \n\n" % result)
+        show_dict = {"account": "按账户/支付方式 统计：", "seller": "按交易方 统计：", "category_p": "按一级分类 统计：", "category_c": "按二级分类 统计：", "member": "按使用者 统计："}
+        for item in ["account", "seller", "category_p", "category_c", "member"]:
+            sql = "select %s,count(money),sum(money),avg(money),max(money),min(money) from %s group by %s;" % (item, self.db_v, item)
+            # print(sql)
+            self.c.execute(sql)
+            results = self.c.fetchall()
+            self.info_note.insert(tb.INSERT, "\n%s\n" % show_dict[item])
+            for result in results:
+                self.info_note.insert(tb.INSERT, "%s 相关共 %s 笔交易\n交易总金额:%s \n平均交易金额:%s \n最大交易金额:%s \n最小交易金额:%s \n" % result)
+        # 显示交易详情
+        self.txt_note.delete("0.0", END)  # 清空显示区
+        sql = "select id,note_date,title,remark,money,account,seller,category_p,category_c,member from %s order by %s %s;" % (self.db_v, order_mode, order_key)
+        self.c.execute(sql)
+        result = self.c.fetchall()
+        for item in result:
+            msg = "id:%s\n日期:%s, 事项:%s, 备注:%s, 金额:%s, \n账户/支付方式:%s, 交易方:%s, 一级分类:%s, 二级分类:%s, 使用者:%s\n\n" % item
+            self.txt_note.insert(tb.INSERT, msg)
+        self.clearMsg()
+        self.label_notes_info.config(text="当前共有 %s 条记账记录！" % len(result))  # 显示记账记录数
+
+    def searchNotes(self):
+        """用于搜索便签"""
+        # 获取搜索关键字
+        search_key = self.search_key.get()  # 搜索词
+        search_mode = self.search_mode.get()  # 搜索模式  “content” 事项和备注 “note_date” 时间
+        order_mode = self.order_mode.get()  # 根据什么排序
+        order_key = self.order_option.get()  # 排序
+        # 显示交易详情
+        self.txt_note.delete("0.0", END)
+        self.info_note.delete("0.0", END)
+        # 获取交易分析汇总信息
+        sql = """select count(money),sum(money),avg(money),max(money),min(money) from %s where %s like ? """ % (self.db_v, search_mode)
+        self.c.execute(sql, ("%%%s%%" % search_key,))
+        result = self.c.fetchone()  # 总信息
+        self.info_note.delete("0.0", END)
+        self.info_note.insert(tb.INSERT, "共进行了 %s 笔交易\n交易总金额:%s \n平均交易金额:%s \n最大交易金额:%s \n最小交易金额:%s \n\n" % result)
+        show_dict = {"account": "按账户/支付方式 统计：", "seller": "按交易方 统计：", "category_p": "按一级分类 统计：",
+                     "category_c": "按二级分类 统计：", "member": "按使用者 统计："}
+        for item in ["account", "seller", "category_p", "category_c", "member"]:
+            sql = """select %s,count(money),sum(money),avg(money),max(money),min(money) from %s
+              where %s like ? group by %s""" % (item, self.db_v, search_mode, item)
+            self.c.execute(sql, ("%%%s%%" % search_key,))
+            results = self.c.fetchall()
+            self.info_note.insert(tb.INSERT, "\n%s\n" % show_dict[item])
+            for result in results:
+                msg = "%s 相关共 %s 笔交易\n交易总金额:%s \n平均交易金额:%s \n最大交易金额:%s \n最小交易金额:%s \n" % result
+                self.info_note.insert(tb.INSERT, msg)
+        # 获取交易详情
+        sql = """select id,note_date,title,remark,money,account,seller,category_p,category_c,member 
+                from %s where %s like ? order by %s %s;""" % (self.db_v, search_mode, order_mode, order_key)
+        logger.debug("搜索sql:%s " % sql)
+        self.c.execute(sql, ("%%%s%%" % search_key,))
+        # 显示交易详情信息
+        result = self.c.fetchall()
+        self.clearMsg()
+        if not result:  # 没有搜索到结果
+            self.label_notes_info.config(text="未搜索到符合条件的记账记录！")
+        else:
+            self.label_notes_info.config(text="共搜索到符合条件的 %s 条记账记录！" % len(result))  # 显示找到多少条
+            for item in result:
+                msg = "id:%s\n日期:%s, 事项:%s, 备注:%s, 金额:%s, \n账户/支付方式:%s, 交易方:%s, 一级分类:%s, 二级分类:%s, 使用者:%s\n\n" % item
+                self.txt_note.insert(tb.INSERT, msg)
+
+    def locateNote(self):
+        """用于通过id定位便签并将其填充到对应控件内"""
+        # 定位要修改的便签
+        select_id = self.select_id.get()
+        # print("select_id:", select_id)
+        # sql = "select id,note_date, title, remark, money, account_id, seller_id, category_pid, category_cid, member_id from %s where id=?" % self.db_table
+        sql = "select id,note_date, title, remark, money, account, seller, category_p, category_c, member from %s where id=?" % self.db_v
+        self.c.execute(sql, (select_id,))
+        note_item = self.c.fetchone()
+        logger.debug(note_item)
+        # print("note_item:", note_item)
+        if note_item:
+            self.current_id = select_id  # 记录当前选中的id
+            self.title.set(note_item[2])
+            self.note_date.set(note_item[1])
+            self.remark.set(note_item[3])
+            self.money.set(note_item[4])
+            self.account.set(note_item[5])
+            self.seller.set(note_item[6])
+            self.category_p.set(note_item[7])
+            self.category_c.set(note_item[8])
+            self.member.set(note_item[9])
+            self.buttun_create_note.config(text="修改")
+            self.txt_note.delete("0.0", END)
+            self.info_note.delete("0.0", END)
+            self.label_notes_info.config(text="正在修改id为%s的记账记录！" % select_id)
+        else:
+            self.clearMsg()
+            self.txt_note.delete("0.0", END)
+            self.info_note.delete("0.0", END)
+            self.buttun_create_note.config(text="创建")
+            self.label_notes_info.config(text="数据库中未找到id为:%s的记账记录！" % select_id)
+
+
+class IndexFrame(tb.LabelFrame):
+    """首页/信息汇总页"""
+    def __init__(self, master=None):
+        tb.LabelFrame.__init__(self, master)
+        # 创建聊天记录查看页面
+        self.root = tb.LabelFrame(master, text='信息汇总')  # 定义内部变量root
+        self.pwin = master  # 父容器对象引用，方便后面调用父容器实例方法
+        self.root.grid()
+        # 链接数据库
+        self.conn = sqlite3.connect(settings.DB_PATH)
+        self.c = self.conn.cursor()
+        self.createPage()
+        self.show_infos()
+
+    def createPage(self):
+        # 标签
+        tb.Label(self.root, text="支出", width=40).grid(row=0, column=0, padx=2, pady=4)
+        tb.Label(self.root, text="收入", width=40).grid(row=0, column=1, padx=2, pady=4)
+        tb.Label(self.root, text="借入", width=40).grid(row=0, column=2, padx=2, pady=4)
+        tb.Label(self.root, text="借出", width=40).grid(row=2, column=0, padx=2, pady=4)
+        tb.Label(self.root, text="还款", width=40).grid(row=2, column=1, padx=2, pady=4)
+        tb.Label(self.root, text="记录", width=40).grid(row=2, column=2, padx=2, pady=4)
+        tb.Button(self.root, text="刷新", command=self.show_infos,bootstyle="success-outline").grid(row=12)
+        # 内容
+        self.l_payment = tb.Label(self.root)
+        self.l_income = tb.Label(self.root)
+        self.l_borrow = tb.Label(self.root)
+        self.l_lend = tb.Label(self.root)
+        self.l_repayment = tb.Label(self.root)
+        self.l_note = tb.Label(self.root)
+        self.labels = [self.l_payment, self.l_income, self.l_borrow, self.l_lend, self.l_repayment, self.l_note]
+        row = 1
+        col = 0
+        for item in self.labels:
+            item.grid(row=row, column=col)
+            col += 1
+            if col == 3:
+                row += 2
+                col = 0
+
+    def show_infos(self, event=None):
+        # 显示交易分析汇总信息
+        # print("show_infos 函数运行，event:", event)
+        db_views = ["v_payments_info", "v_incomes_info", "v_borrows_info", "v_lends_info", "v_repayments_info"]
+        count = 0
+        # 显示交易汇总信息
+        for db_v in db_views:
+            self.c.execute("select count(money),sum(money),avg(money),max(money),min(money) from %s" % db_v)
+            result = self.c.fetchone()  # 总信息
+            self.labels[count].config(text="共进行了 %s 笔交易\n交易总金额:%s \n平均交易金额:%s \n最大交易金额:%s \n最小交易金额:%s \n" % result)
+            count += 1
+        # 显示记录汇总信息
+        self.c.execute("select id,note_date,title,remark,remark2 from v_notes_info;")
+        result = self.c.fetchall()
+        self.l_note.config(text="当前共有 %s 条记事记录！" % len(result))  # 显示记录数
+
+
+class PaymentFrame(BaseFrameFull):
+    """支出记录"""
+    def __init__(self, master=None):
+        super(PaymentFrame, self).__init__(master)
+        self.createPage()
+
+
+class IncomeFrame(BaseFrameFull):
+    """收入记录"""
+    def __init__(self, master=None):
+        super(IncomeFrame, self).__init__(master)
+        self.root.config(text="收入记录")
+        self.db_v = "v_incomes_info"  # 数据库视图名称
+        self.db_table = "incomes"  # 数据库表名
+        self.createPage()
+
+
+class BorrowFrame(BaseFrame):
+    """借入记录"""
+    def __init__(self, master=None):
+        super(BorrowFrame, self).__init__(master)
+        self.root.config(text="借入记录")
+        self.db_v = "v_borrows_info"  # 数据库视图名称
+        self.db_table = "borrows"  # 数据库表名
+        self.createPage()
+        self.set_combox_values()
+
+
+class LendFrame(BaseFrame):
+    """借出记录"""
+    def __init__(self, master=None):
+        super().__init__(master)
+        self.root.config(text="借出记录")
+        self.db_v = "v_lends_info"  # 数据库视图名称
+        self.db_table = "lends"  # 数据库表名
+        self.createPage()
+        self.set_combox_values()
+
+
+class RepaymentFrame(BaseFrame):
+    """还款记录"""
+    def __init__(self, master=None):
+        super().__init__(master)
+        self.root.config(text="还款记录")
+        self.db_v = "v_repayments_info"  # 数据库视图名称
+        self.db_table = "repayments"  # 数据库表名
+        self.createPage()
+        self.set_combox_values()
+
+
+class NewTagFrame(tb.LabelFrame):
+    """用于创建新的类别标签"""
+    def __init__(self, master=None):
+        tb.LabelFrame.__init__(self, master)
+        # 创建聊天记录查看页面
+        self.pwin = master  # 父容器对象引用，方便后面调用父容器实例方法
+        self.temp = tb.LabelFrame(self.pwin, text='新增标签')  # 创建新Frame用于新增标签
+        self.temp.grid()  # 显示修改标签页
+        # 链接数据库
+        self.conn = sqlite3.connect(settings.DB_PATH)
+        self.c = self.conn.cursor()
+        self.addChosenTag()
+
+        
+class BudgetFrame(tb.LabelFrame):
+    """预算页面：显示本月预算、已支出、剩余额度，并允许保存预算到 budget.json"""
+    def __init__(self, master=None):
+        tb.LabelFrame.__init__(self, master)
+        self.root = tb.LabelFrame(master, text='预算')
+        self.pwin = master
+        self.root.grid()
+        # 文件与变量
+        self.budget_file = os.path.join(base_dir, 'budget.json')
+        self.budget_var = tb.StringVar(value="本月预算：未设置")
+        self.spent_var = tb.StringVar(value="已支出：¥0.00")
+        self.remaining_var = tb.StringVar(value="剩余额度：¥0.00")
+        
+        # 创建样式用于改变字体颜色
+        self.style = tb.Style()
+        self.style.configure("Red.TLabel", foreground="red")
+        self.style.configure("Normal.TLabel", foreground="black")
+        
+        # 布局
+        self.budget_frame = tb.Frame(self.root)
+        self.budget_frame.grid(row=0, column=0, padx=10, pady=10)
+        
+        # 预算信息标签
+        tb.Label(self.budget_frame, textvariable=self.budget_var).grid(row=0, column=0, sticky=tb.W)
+        tb.Label(self.budget_frame, textvariable=self.spent_var).grid(row=1, column=0, sticky=tb.W)
+        
+        # 剩余额度标签 - 添加样式引用
+        self.remaining_label = tb.Label(self.budget_frame, textvariable=self.remaining_var)
+        self.remaining_label.grid(row=2, column=0, sticky=tb.W)
+        
+        # 警告标签
+        self.warning_label = tb.Label(self.budget_frame, text="", foreground="red", font=('Arial', 10, 'bold'))
+        self.warning_label.grid(row=3, column=0, sticky=tb.W, pady=(5, 0))
+        
+        # 输入与保存
+        self.budget_input = tb.StringVar()
+        tb.Entry(self.budget_frame, textvariable=self.budget_input, width=18).grid(row=4, column=0, pady=6)
+        tb.Button(self.budget_frame, text="保存预算", command=self.set_budget_save,bootstyle="success-outline").grid(row=5, column=0, pady=2)
+        
+        # db
+        self.conn = sqlite3.connect(settings.DB_PATH)
+        self.c = self.conn.cursor()
+        # 初始化显示
+        self.show_infos()
+        # 绑定全局事件，当有支出/收入变更时刷新预算显示
+        try:
+            top = self.root.winfo_toplevel()
+            top.bind('<<PaymentsChanged>>', lambda e: self.show_infos())
+        except Exception:
+            pass
+
+    def show_infos(self, event=None):
+        """更新预算显示：从文件读取预算并计算当月已支出"""
+        try:
+            from datetime import datetime as _dt
+            ym = _dt.now().strftime('%Y-%m')
+            budget_data = {}
+            if os.path.exists(self.budget_file):
+                try:
+                    with open(self.budget_file, 'r', encoding='utf-8') as bf:
+                        budget_data = json.load(bf)
+                except Exception:
+                    budget_data = {}
+            budget_amount = float(budget_data.get('amount', budget_data.get('monthly_budget', 0) or 0) or 0)
+            # 计算当月已支出
+            try:
+                self.c.execute("select sum(money) from v_payments_info where substr(note_date,1,7)=?", (ym,))
+                r = self.c.fetchone()
+                spent = float(r[0]) if r and r[0] is not None else 0.0
+            except Exception:
+                spent = 0.0
+            remaining = budget_amount - spent
+            
+            # 重置为正常颜色
+            self.remaining_label.configure(style="Normal.TLabel")
+            self.warning_label.config(text="")
+            
+            if budget_amount <= 0:
+                self.budget_var.set("本月预算：未设置")
+                self.remaining_var.set("剩余额度：¥0.00")
+            else:
+                self.budget_var.set(f"本月预算：¥{budget_amount:.2f}")
+                self.remaining_var.set(f"剩余额度：¥{remaining:.2f}")
+                
+                # 检查是否需要警告
+                if remaining <= budget_amount * 0.2 and remaining > 0:
+                    # 设置红色字体
+                    self.remaining_label.configure(style="Red.TLabel")
+                    # 显示警告
+                    warning_text = f"警告：剩余额度仅有¥{remaining:.2f}，仅剩预算的{remaining/budget_amount*100:.1f}%！"
+                    self.warning_label.config(text=warning_text)
+                elif remaining <= 0:
+                    # 设置红色字体
+                    self.remaining_label.configure(style="Red.TLabel")
+                    # 显示超支警告
+                    warning_text = f"警告：已超支¥{abs(remaining):.2f}！"
+                    self.warning_label.config(text=warning_text)
+            
+            self.spent_var.set(f"已支出：¥{spent:.2f}")
+            
+        except Exception as e:
+            print("预算显示错误：", e)
+
+    def set_budget_save(self):
+        """保存用户在预算页手动输入的预算金额到 budget.json"""
+        val = self.budget_input.get().strip()
+        if not val:
+            mBox.showerror("输入错误", "请输入预算金额（数字）")
+            return
+        try:
+            amount = float(val)
+        except Exception:
+            mBox.showerror("输入错误", "请输入合法数字，例如 1000 或 1000.00")
+            return
+        try:
+            data = {}
+            if os.path.exists(self.budget_file):
+                try:
+                    with open(self.budget_file, 'r', encoding='utf-8') as bf:
+                        data = json.load(bf)
+                except Exception:
+                    data = {}
+            data['amount'] = amount
+            from datetime import datetime
+            data['last_update'] = datetime.now().strftime('%Y-%m')
+            with open(self.budget_file, 'w', encoding='utf-8') as bf:
+                json.dump(data, bf, ensure_ascii=False, indent=2)
+            mBox.showinfo("成功", f"预算已保存为：¥{amount:.2f}")
+            # 刷新显示
+            try:
+                self.show_infos()
+            except Exception:
+                pass
+        except Exception as e:
+            mBox.showerror("保存失败", str(e))
+
+    def addChosenTag(self):
+        """用于新增下拉框的标签"""
+        tb.Label(self.temp, text="选择要新增的标签类型：").grid(row=0, column=0)
+        self.mode = tb.StringVar()  # 要新增的标签类型
+        self.mode.set("pay_categorys")
+        title = tb.StringVar()  # 要新增的标签title
+        remark = tb.StringVar()  # 要新增的标签描述，如果新增类别（category）标签 则进行转换为pid
+        tb.Radiobutton(self.temp, text="账户/支付方式", value="accounts", variable=self.mode, command=self.redisplayLabel).grid(row=0, column=1)
+        tb.Radiobutton(self.temp, text="交易对象", value="sellers", variable=self.mode, command=self.redisplayLabel).grid(row=0, column=2)
+        tb.Radiobutton(self.temp, text="支出分类", value="pay_categorys", variable=self.mode, width=20, command=self.redisplayLabel).grid(row=0, column=3)
+        tb.Radiobutton(self.temp, text="收入分类", value="income_categorys", variable=self.mode, width=20, command=self.redisplayLabel).grid(row=0, column=4)
+        tb.Radiobutton(self.temp, text="成员/使用者", value="members", variable=self.mode, width=20, command=self.redisplayLabel).grid(row=0, column=5)
+        tb.Label(self.temp, text="请输入要新增的信息:").grid(row=1, column=0)
+        self.label_input1 = tb.Label(self.temp, text="内容/新增分类")
+        self.label_input1.grid(row=1, column=1)
+        self.label_input2 = tb.Label(self.temp, text="备注/所属上级分类")
+        self.label_input2.grid(row=1, column=2)
+        tb.Entry(self.temp, textvariable=title).grid(row=2, column=1)
+        tb.Entry(self.temp, textvariable=remark).grid(row=2, column=2)
+        tb.Button(self.temp, text="新增", command=lambda: self.doAddChosenTag(self.mode, title, remark),bootstyle="info-outline").grid(row=3, column=1)
+        # tb.Button(self.temp, text="返回上一页", command=self.returnPrePage).grid(row=3, column=4)
+        # 批量调整控件布局
+        for child in self.temp.winfo_children():
+            child.grid_configure(sticky=tb.EW, padx=2, pady=5)
+
+    def redisplayLabel(self):
+        """更新显示内容/新增分类以及备注/所属上级分类"""
+        if self.mode.get() in ["pay_categorys", "income_categorys"]:
+            self.label_input1.config(text="本级分类")
+            self.label_input2.config(text="上级分类")
+        else:
+            self.label_input1.config(text="内容")
+            self.label_input2.config(text="备注")
+
+    def doAddChosenTag(self, mode, title, remark):
+        """将获取到的信息插入数据库"""
+        mode = mode.get()
+        title = title.get()
+        remark = remark.get()
+        # 判断是否已存在数据库
+        self.c.execute("select count(*) from %s where title=?" % mode, (title,))
+        if self.c.fetchone()[0]:
+            print("%s已存在%s数据库中" % (title, mode))
+            mBox.showwarning("失败", message="数据已存在数据库！")
+            return
+        # 新增标签，写入数据库表数据
+        try:
+            if mode in ["pay_categorys", "income_categorys"]:
+                self.c.execute("select id from %s where title=?" % mode, (remark,))
+                pid = self.c.fetchall()
+                if pid:
+                    pid = pid[0][0]
+                else:
+                    pid = None
+                # print("pid, type:%s, value:%s" % (type(pid), pid))
+                self.c.execute("insert into %s (title, pid) values (?,?)" % mode, (title, pid))
+                self.conn.commit()
+            else:
+                sql_dict = {"accounts": "insert into accounts (title, remark) values (?,?)",
+                            "sellers": "insert into sellers (title, remark) values (?,?)",
+                            "members": "insert into members (title, remark) values (?,?)"}
+                self.c.execute(sql_dict[mode], (title, remark))
+                self.conn.commit()
+            mBox.showinfo("成功", message="新建标签成功！")
+        except Exception:
+            mBox.showerror("失败", '新建标签失败！')
+
+
+class NoteFrame(tb.LabelFrame):
+    """记录模块"""
+    def __init__(self, master=None):
+        tb.LabelFrame.__init__(self, master)
+        # 创建聊天记录查看页面
+        self.root = tb.LabelFrame(master, text='记录')  # 定义内部变量root
+        self.pwin = master  # 父容器对象引用，方便后面调用父容器实例方法
+        self.root.grid()
+        self.select_id = tb.IntVar()  # 要定位的id  ，用于定位数据库中的记账记录
+        self.current_id = None  # 用于记录当前选中id
+        self.db_v = "v_notes_info"  # 数据库视图名称
+        self.db_table = "notes"  # 数据库表名
+        self.title = tb.StringVar()  # 事项
+        self.note_date = tb.StringVar()  # 日期
+        self.remark = tb.StringVar()  # 操作后余量
+        self.remark2 = tb.StringVar()  # 额外备注
+        self.search_key = tb.StringVar()  # 搜索关键字
+        self.search_mode = tb.StringVar()  # 搜索模式  字段
+        self.search_mode.set("title")
+        self.order_mode = tb.StringVar()  # 排序模式  id, note_date, money
+        self.order_mode.set("id")
+        self.order_option = tb.StringVar()  # 排序参数  asc 升序  desc 降序
+        self.order_option.set("asc")
+        self.entry_flag = tb.BooleanVar()  # 刷新输入区  True 每次提交完都会将输入区内容清空， 如果要重复输入重复日期 就很不方便
+        self.entry_flag.set(True)
+        # 链接数据库
+        self.conn = sqlite3.connect(settings.DB_PATH)
+        self.c = self.conn.cursor()
+        self.createPage()
+
+    def createPage(self):
+        f_top = tb.Frame(self.root)
+        f_title = tb.Frame(self.root)
+        f_content = tb.Frame(self.root)
+        f_bottom = tb.Frame(self.root)
+        f_top.pack(side=tb.TOP, fill=tb.BOTH, expand=True)
+        f_bottom.pack(side=tb.BOTTOM, fill=tb.BOTH, expand=True)
+        f_title.pack(side=tb.TOP, fill=tb.BOTH, expand=True)
+        f_content.pack(side=tb.LEFT, fill=tb.BOTH, expand=True)
+
+        # 标签
+        tb.Label(f_title, text="事项").grid(row=0, column=1)
+        tb.Label(f_title, text="日期").grid(row=0, column=2)  # 格式：'%Y-%m-%d %H:%M:%S'
+        tb.Label(f_title, text="备注").grid(row=0, column=3, columnspan=2)
+        tb.Label(f_title, text="额外备注").grid(row=0, column=5)
+
+        self.entry_title = tb.Entry(f_title, textvariable=self.title, width=20)
+        self.entry_title.grid(row=1, column=1, sticky=tb.EW, padx=2)
+        self.entry_date = tb.Entry(f_title, textvariable=self.note_date, width=20)  # 输入事项框
+        self.entry_date.grid(row=1, column=2, sticky=tb.EW, padx=2)
+        self.entry_remark = tb.Entry(f_title, textvariable=self.remark, width=40)  # 输入备注框
+        self.entry_remark.grid(row=1, column=3, columnspan=2, sticky=tb.EW, padx=2)
+        self.entry_remark2 = tb.Entry(f_title, textvariable=self.remark2, width=40)  # 输入额外备注框
+        self.entry_remark2.grid(row=1, column=5, sticky=tb.EW, padx=2)
+        self.buttun_create_note = tb.Button(f_title, text="创建", command=self.addNote,bootstyle="success-outline")  # 创建记账记录 按钮
+        self.buttun_create_note.grid(row=1, column=6, sticky=tb.EW, padx=2)
+
+        self.label_notes_info = tb.Label(f_content)  # 所有记录总数信息
+        self.label_notes_info.grid(row=0, column=0, columnspan=2, pady=5)
+        # 记录显示区
+        self.txt_note = ScrolledText(f_content, wrap=tb.WORD, width=130, height=38)
+        self.txt_note.grid(row=1, column=0)
+
+        f_radios = tb.Frame(f_bottom)  # 防止单选项区域  即根据什么搜索的选项
+        f_radios.grid(row=0, columnspan=9)
+        tb.Label(f_radios, text="设置:").grid(row=0, column=0)
+        tb.Radiobutton(f_radios, text="根据ID排序", value="id", variable=self.order_mode, command=self.searchNotes).grid(row=0, column=1)
+        tb.Radiobutton(f_radios, text="根据日期排序", value="note_date", variable=self.order_mode, command=self.searchNotes).grid(row=1, column=1)
+        tb.Radiobutton(f_radios, text="升序", value="asc", variable=self.order_option, command=self.searchNotes).grid(row=0, column=2)
+        tb.Radiobutton(f_radios, text="降序", value="desc", variable=self.order_option, command=self.searchNotes).grid(row=1, column=2)
+        tb.Radiobutton(f_radios, text="刷新输入区", value=True, variable=self.entry_flag).grid(row=0, column=3)
+        tb.Radiobutton(f_radios, text="不刷新输入区", value=False, variable=self.entry_flag).grid(row=1, column=3)
+        tb.Label(f_radios, text="搜索方式:").grid(row=4, column=0)
+        tb.Radiobutton(f_radios, text="根据事项", value="title", variable=self.search_mode).grid(row=4, column=1)
+        tb.Radiobutton(f_radios, text="根据日期", value="note_date", variable=self.search_mode).grid(row=4, column=2)
+        tb.Radiobutton(f_radios, text="根据备注", value="remark", variable=self.search_mode).grid(row=4, column=1)
+        tb.Radiobutton(f_radios, text="根据额外备注", value="remark2", variable=self.search_mode).grid(row=4, column=3)
+
+        tb.Label(f_bottom, text="搜索内容:").grid(row=1, column=0)
+        tb.Entry(f_bottom, textvariable=self.search_key, width=50).grid(row=1, column=1, columnspan=4)
+        tb.Button(f_bottom, text="搜索", command=self.searchNotes,bootstyle="info-outline").grid(row=1, column=5)
+        tb.Button(f_bottom, text="查看所有", command=self.showAll,bootstyle="primary-outline").grid(row=1, column=6)
+        tb.Label(f_bottom, text="定位编号:").grid(row=2, column=0)
+        tb.Entry(f_bottom, textvariable=self.select_id).grid(row=2, column=1)
+        tb.Button(f_bottom, text="定位", command=self.locateNote,bootstyle="info-outline").grid(row=2, column=2)
+        self.buttun_cancel = tb.Button(f_bottom, text="取消修改", command=self.cancelUpdate,bootstyle="warning-outline")
+        self.buttun_cancel.grid(row=2, column=4)
+        tb.Button(f_bottom, text="删除记录", command=self.delNote,bootstyle="danger-outline").grid(row=2, column=5)
+        for child in f_radios.winfo_children():
+            child.grid_configure(padx=2, pady=4, sticky=tb.EW)
+        for child in f_bottom.winfo_children():
+            child.grid_configure(padx=2, pady=4, sticky=tb.EW)
+        self.showAll()
+
+    def addNote(self):
+        """新增/修改记账记录"""
+        # list = [self.title, self.note_date, self.remark, self.remark2]
+        # for item in list:
+        #     print(item.get(), end=" ")
+        # print()
+        time_now = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())  # 当前时间
+        note_date = self.note_date.get()
+        note_date = changeStrToDate(note_date)
+        if note_date is None:
+            note_date = time.strftime('%Y-%m-%d', time.localtime())
+            self.note_date.set(note_date)
+        title = self.title.get()
+        remark = self.remark.get()
+        remark2 = self.remark2.get()
+        if not self.current_id:
+            # 新增
+            sql = "insert into %s(note_date, title, remark, remark2, create_time) values(?,?,?,?,?)" % self.db_table
+            self.c.execute(sql, (note_date, title, remark, remark2, time_now))
+        else:
+            # 修改
+            sql = "update %s set note_date=?,title=?,remark=?,remark2=?,modify_time=? where id=?" % self.db_table
+            self.c.execute(sql, (note_date, title, remark, remark2, time_now, self.current_id))
+        self.conn.commit()
+        self.clearMsg()
+        self.showAll()
+
+    def showAll(self):
+        """展示所有交易记录"""
+        # 显示详情
+        order_mode = self.order_mode.get()  # 根据什么排序
+        order_key = self.order_option.get()  # 排序
+        self.txt_note.delete("0.0", END)  # 清空显示区
+        sql = "select id,note_date,title,remark,remark2 from %s order by %s %s;" % (self.db_v, order_mode, order_key)
+        self.c.execute(sql)
+        result = self.c.fetchall()
+        for item in result:
+            msg = "id:%s\n日期:%s, 事项:%s, \n备注:%s, 额外备注:%s\n\n" % item
+            self.txt_note.insert(tb.INSERT, msg)
+        self.clearMsg()
+        self.label_notes_info.config(text="当前共有 %s 条记事记录！" % len(result))  # 显示记录数
+
+    def searchNotes(self):
+        """用于搜索便签"""
+        # 获取搜索关键字
+        search_key = self.search_key.get()  # 搜索词
+        search_mode = self.search_mode.get()  # 搜索模式  “content” 事项和备注 “note_date” 时间
+        order_mode = self.order_mode.get()  # 根据什么排序
+        order_key = self.order_option.get()  # 排序
+        # 显示交易详情
+        self.txt_note.delete("0.0", END)
+        sql = """select id,note_date,title,remark,remark2 from %s where %s like ?  order by %s %s;""" % (self.db_v, search_mode, order_mode, order_key)
+        self.c.execute(sql, ("%%%s%%" % search_key,))
+        result = self.c.fetchall()
+        self.clearMsg()
+        if not result:  # 没有搜索到结果
+            self.label_notes_info.config(text="未搜索到符合条件的记录！")
+        else:
+            self.label_notes_info.config(text="共搜索到符合条件的 %s 条记录！" % len(result))  # 显示找到多少条
+            for item in result:
+                msg = "id:%s\n日期:%s, 事项:%s, \n备注:%s, 额外备注:%s\n\n" % item
+                self.txt_note.insert(tb.INSERT, msg)
+
+    def locateNote(self):
+        """用于通过id定位便签并将其填充到对应控件内"""
+        # 定位要修改的便签
+        select_id = self.select_id.get()
+        # print("select_id:", select_id)
+        sql = "select id, note_date, title, remark, remark2 from %s where id=?" % self.db_table
+        self.c.execute(sql, (select_id,))
+        note_item = self.c.fetchone()
+        # print("note_item:", note_item)
+        if note_item:
+            self.current_id = select_id  # 记录当前选中的id
+            self.title.set(note_item[2])
+            self.note_date.set(note_item[1])
+            self.remark.set(note_item[3])
+            self.remark2.set(note_item[4])
+            self.buttun_create_note.config(text="修改")
+            self.txt_note.delete("0.0", END)
+            self.label_notes_info.config(text="正在修改id为%s的记录！" % select_id)
+        else:
+            self.clearMsg()
+            self.txt_note.delete("0.0", END)
+            self.buttun_create_note.config(text="创建")
+            self.label_notes_info.config(text="数据库中未找到id为:%s的记录！" % select_id)
+
+    def cancelUpdate(self):
+        """用于取消修改便签内容操作"""
+        # 还原标签状态为新增便签
+        self.clearMsg()
+        self.txt_note.delete("0.0", END)
+        self.buttun_create_note.config(text="创建")
+
+    def delNote(self):
+        """用于删除记账记录"""
+        # 只进行逻辑删除
+        sql = "update %s set is_delete=1 where id=?" % self.db_table
+        self.c.execute(sql, (self.current_id,))
+        self.conn.commit()
+        print("删除id:%s 的记录！" % self.current_id)
+        self.clearMsg()
+        # 刷新结果
+        self.showAll()
+
+    def clearMsg(self):
+        """用于将显示区的控件信息恢复最初状态"""
+        self.current_id = None
+        self.buttun_create_note.config(text="创建")
+        self.label_notes_info.config(text="")
+        if self.entry_flag.get() is True:
+            self.title.set("")
+            self.note_date.set("")
+            self.remark.set("")
+            self.remark2.set("")
+
+
+class QueryFrame(tb.LabelFrame):
+    """用于查询数据，主要实现多种条件查询"""
+
+    def __init__(self, master=None):
+        tb.LabelFrame.__init__(self, master)
+        # 创建聊天记录查看页面
+        self.root = tb.LabelFrame(master, text='查询')  # 定义内部变量root
+        self.pwin = master  # 父容器对象引用，方便后面调用父容器实例方法
+        self.root.grid()
+        self.db_v = tb.StringVar()  # 数据库视图名称
+        self.db_table = tb.StringVar()  # 数据库表名
+        self.db_v.set("v_payments_info")
+        self.db_table.set("payments")
+        self.title = tb.StringVar()  # 事项
+        self.note_date = tb.StringVar()  # 日期
+        self.remark = tb.StringVar()  # 操作后余量
+        # self.money = tb.DoubleVar()  # 金额
+        self.money = tb.StringVar()  # 金额
+        self.account = tb.StringVar()  # 账户下拉框数据
+        self.seller = tb.StringVar()  # 商家/交易对象下拉框数据
+        self.category_p = tb.StringVar()  # 类别下拉框数据,一级分类
+        self.category_c = tb.StringVar()  # 类别下拉框数据，二级分类
+        self.member = tb.StringVar()  # 成员/使用者下拉框数据
+        self.order_mode = tb.StringVar()  # 排序模式  id, note_date, money
+        self.order_mode.set("id")
+        self.order_option = tb.StringVar()  # 排序参数  asc 升序  desc 降序
+        self.order_option.set("asc")
+        self.entry_flag = tb.BooleanVar()  # 刷新输入区  True 每次提交完都会将输入区内容清空， 如果要重复输入重复日期 就很不方便
+        self.entry_flag.set(True)
+        # 链接数据库
+        self.conn = sqlite3.connect(settings.DB_PATH)
+        self.c = self.conn.cursor()
+        self.createPage()
+
+    def createPage(self):
+        self.f_top = tb.Frame(self.root)
+        self.f_title = tb.Frame(self.root)
+        self.f_content = tb.Frame(self.root)
+        self.f_bottom = tb.Frame(self.root)
+        self.f_top.pack(side=tb.TOP, fill=tb.BOTH, expand=True)
+        self.f_bottom.pack(side=tb.BOTTOM, fill=tb.BOTH, expand=True)
+        self.f_title.pack(side=tb.TOP, fill=tb.BOTH, expand=True)
+        self.f_content.pack(side=tb.LEFT, fill=tb.BOTH, expand=True)
+        # 搜索表
+        tb.Label(self.f_top, text="查询:").grid(row=4, column=0)
+        tb.Radiobutton(self.f_top, text="支出", value="v_payments_info", variable=self.db_v, command=self.check).grid(row=4, column=1)
+        tb.Radiobutton(self.f_top, text="收入", value="v_incomes_info", variable=self.db_v, command=self.check).grid(row=4, column=2)
+        tb.Radiobutton(self.f_top, text="借入", value="v_borrows_info", variable=self.db_v, command=self.check).grid(row=4, column=3)
+        tb.Radiobutton(self.f_top, text="借出", value="v_lends_info", variable=self.db_v, command=self.check).grid(row=4, column=4)
+        tb.Radiobutton(self.f_top, text="还款", value="v_repayments_info", variable=self.db_v, command=self.check).grid(row=4, column=5)
+        for child in self.f_top.winfo_children():
+            # child.config(command=self.check)   # 报错 _tbinter.TclError: unknown option "-command"
+            child.grid_configure(padx=2, pady=4, sticky=tb.EW)
+        # 标签
+        tb.Label(self.f_title, text="事项").grid(row=0, column=1)
+        tb.Label(self.f_title, text="日期").grid(row=0, column=2)  # 格式：'%Y-%m-%d %H:%M:%S'
+        tb.Label(self.f_title, text="备注").grid(row=0, column=3, columnspan=2)
+        tb.Label(self.f_title, text="金额").grid(row=0, column=5)
+        tb.Label(self.f_title, text="账户/支付方式").grid(row=2, column=1)
+        tb.Label(self.f_title, text="交易对象").grid(row=2, column=2)  # 格式：'%Y-%m-%d %H:%M:%S'
+        tb.Label(self.f_title, text="一级分类").grid(row=2, column=3)  # 格式：'%Y-%m-%d %H:%M:%S'
+        tb.Label(self.f_title, text="二级分类").grid(row=2, column=4)
+        tb.Label(self.f_title, text="成员/使用者").grid(row=2, column=5)
+
+        self.entry_title = tb.Entry(self.f_title, textvariable=self.title, width=40)  # 输入事项框
+        self.entry_title.grid(row=1, column=1, sticky=tb.EW, padx=2)
+        self.entry_date = tb.Entry(self.f_title, textvariable=self.note_date, width=20)
+        self.entry_date.grid(row=1, column=2, sticky=tb.EW, padx=2)
+        self.entry_remark = tb.Entry(self.f_title, textvariable=self.remark, width=40)  # 输入备注框
+        self.entry_remark.grid(row=1, column=3, columnspan=2, sticky=tb.EW, padx=2)
+        self.entry_money = tb.Entry(self.f_title, textvariable=self.money, width=20)  # 输入金额框
+        self.entry_money.grid(row=1, column=5, sticky=tb.EW, padx=2)
+        self.entry_account = tb.Entry(self.f_title, textvariable=self.account, width=20)
+        self.entry_account.grid(row=3, column=1, sticky=tb.EW, padx=2)
+        self.entry_seller = tb.Entry(self.f_title, textvariable=self.seller, width=20)  # 输入事项框
+        self.entry_seller.grid(row=3, column=2, sticky=tb.EW, padx=2)
+        self.entry_category_p = tb.Entry(self.f_title, textvariable=self.category_p, width=20)
+        self.entry_category_p.grid(row=3, column=3, sticky=tb.EW, padx=2)
+        self.entry_category_c = tb.Entry(self.f_title, textvariable=self.category_c, width=20)  # 输入事项框
+        self.entry_category_c.grid(row=3, column=4, sticky=tb.EW, padx=2)
+        self.entry_member = tb.Entry(self.f_title, textvariable=self.member, width=20)  # 输入金额框
+        self.entry_member.grid(row=3, column=5, sticky=tb.EW, padx=2)
+
+        self.buttun_query = tb.Button(self.f_title, text="查询", command=self.searchNotes,bootstyle="info-outline")  # 查询 按钮
+        self.buttun_query.grid(row=1, column=6, sticky=tb.EW, padx=2)
+        self.buttun_clear = tb.Button(self.f_title, text="清空输入区", command=self.clearMsg,bootstyle="warning-outline")
+        self.buttun_clear.grid(row=3, column=6, sticky=tb.EW, padx=2)
+
+        self.label_notes_info = tb.Label(self.f_content)  # 所有记录总数信息
+        self.label_notes_info.grid(row=0, column=0, columnspan=2, pady=5)
+        # 记录显示区
+        # 详情
+        self.txt_note = ScrolledText(self.f_content, wrap=tb.WORD, width=100, height=38)
+        self.txt_note.grid(row=1, column=0)
+        # 总体分析
+        self.info_note = ScrolledText(self.f_content, wrap=tb.WORD, width=35, height=38)
+        self.info_note.grid(row=1, column=1)
+        self.f_radios = tb.Frame(self.f_bottom)  # 防止单选项区域  即根据什么搜索的选项
+        self.f_radios.grid(row=0, columnspan=9)
+        tb.Label(self.f_radios, text="设置:").grid(row=0, column=0)
+        tb.Radiobutton(self.f_radios, text="根据ID排序", value="id", variable=self.order_mode,
+                        command=self.searchNotes).grid(row=0, column=1)
+        tb.Radiobutton(self.f_radios, text="根据日期排序", value="note_date", variable=self.order_mode,
+                        command=self.searchNotes).grid(row=1, column=1)
+        tb.Radiobutton(self.f_radios, text="根据金额排序", value="money", variable=self.order_mode,
+                        command=self.searchNotes).grid(row=2, column=1)
+        tb.Radiobutton(self.f_radios, text="升序", value="asc", variable=self.order_option,
+                        command=self.searchNotes).grid(row=0, column=2)
+        tb.Radiobutton(self.f_radios, text="降序", value="desc", variable=self.order_option,
+                        command=self.searchNotes).grid(row=1, column=2)
+
+        for child in self.f_radios.winfo_children():
+            child.grid_configure(padx=2, pady=4, sticky=tb.EW)
+
+    def searchNotes(self):
+        """用于搜索"""
+        # 获取搜索关键字
+        title = self.title.get()
+        note_date = self.note_date.get()
+        note_date = changeStrToDate(note_date)  # 自动转换为标准格式
+        remark = self.remark.get()
+        money = self.money.get()
+        # 判断是否有输入金额，无输入或者输入非纯数字则money置为None
+        try:
+            money = float(money)
+        except Exception:
+            money = None
+
+        account = self.account.get()
+        seller = self.seller.get()
+        category_p = self.category_p.get()
+        category_c = self.category_c.get()
+        member = self.member.get()
+        keys = {"title": title, "note_date": note_date, "remark": remark, "money": money, "account": account,
+                "seller": seller, "category_p": category_p, "category_c": category_c, "member": member}  # 关键字
+        db_v = self.db_v.get()  # 搜索视图
+        order_mode = self.order_mode.get()  # 根据什么排序
+        order_key = self.order_option.get()  # 排序
+
+        # 显示交易详情
+        self.txt_note.delete("0.0", END)
+        self.info_note.delete("0.0", END)
+        # 拼接查询条件
+        sub_sql = ""  # sql语句条件部分
+        values = []  # sql条件对应值
+        for key, value in keys.items():
+            # logger.debug("搜索关键字：key:%s, value:%s" % (key, value))
+            if value:
+                # 判断是否出现money不填，不填或者输入非纯数字，则匹配所有金额
+                if value == "money":
+                    if money is None:
+                        continue
+                # 拼接所有条件，与
+                if sub_sql.endswith(") "):
+                    sub_sql += "and "
+                sub_sql += "(%s like ?) " % key
+                values.append("%%%s%%" % value)  # 直接拼接，like %?% 需要用%% 转义%
+        logger.debug("sub_sql:%s " % sub_sql)
+        logger.debug("values:%s " % values)
+        values = tuple(values)  # 转为元组方便后面传参到函数
+        logger.debug("tuple(values):%s " % str(values))
+        # 获取交易分析汇总信息
+        sql = """select count(money),sum(money),avg(money),max(money),min(money) from %s""" % db_v
+        if sub_sql:
+            sql += """ where %s;""" % sub_sql
+        logger.debug("sql:%s" % sql)
+        self.c.execute(sql, values)
+        result = self.c.fetchone()  # 总信息
+        self.info_note.delete("0.0", END)
+        self.info_note.insert(tb.INSERT, "共进行了 %s 笔交易\n交易总金额:%s \n平均交易金额:%s \n最大交易金额:%s \n最小交易金额:%s \n\n" % result)
+        show_dict = {"account": "按账户/支付方式 统计：", "seller": "按交易方 统计：", "category_p": "按一级分类 统计：",
+                     "category_c": "按二级分类 统计：", "member": "按使用者 统计："}
+        if db_v in ["v_payments_info", "v_incomes_info"]:
+            columns = ["account", "seller", "category_p", "category_c", "member"]  # 标签分类
+        else:
+            columns = ["account", "seller"]
+
+        for item in columns:
+            sql = """select %s,count(money),sum(money),avg(money),max(money),min(money) from %s """ % (item, db_v)
+            if sub_sql:
+                sql += """ where %s group by %s;""" % (sub_sql, item)
+            else:
+                sql += """ group by %s;""" % item
+            logger.debug("sql:%s" % sql)
+            self.c.execute(sql, values)
+            results = self.c.fetchall()
+            self.info_note.insert(tb.INSERT, "\n%s\n" % show_dict[item])
+            for result in results:
+                msg = "%s 相关共 %s 笔交易\n交易总金额:%s \n平均交易金额:%s \n最大交易金额:%s \n最小交易金额:%s \n" % result
+                self.info_note.insert(tb.INSERT, msg)
+        # 获取交易详情
+        sql = """select id,note_date,title,remark,money"""
+        for item in columns:
+            sql += ",%s" % item
+        sql += """ from %s """ % db_v
+        if sub_sql:
+            sql += """ where %s order by %s %s;""" % (sub_sql, order_mode, order_key)
+        else:
+            sql += """ order by %s %s;""" % (order_mode, order_key)
+        logger.debug("sql:%s" % sql)
+        self.c.execute(sql, values)
+        # 显示交易详情信息
+        result = self.c.fetchall()
+        # self.clearMsg()
+        if not result:  # 没有搜索到结果
+            self.label_notes_info.config(text="未搜索到符合条件的记账记录！")
+        else:
+            self.label_notes_info.config(text="共搜索到符合条件的 %s 条记账记录！" % len(result))  # 显示找到多少条
+            for item in result:
+                msg = "id:%s\n日期:%s, 事项:%s, 备注:%s, 金额:%s, \n账户/支付方式:%s, 交易方:%s, 一级分类:%s, 二级分类:%s, 使用者:%s\n\n" % item
+                self.txt_note.insert(tb.INSERT, msg)
+
+    def clearMsg(self):
+        """用于清空输入区内容"""
+        keys = [self.title, self.note_date, self.remark, self.account, self.category_p, self.category_c, self.member]
+        for item in keys:
+            item.set("")
+        self.money.set(0.0)
+
+    def check(self):
+        """用于检测选择的是什么查询"""
+        db_v = self.db_v.get()
+        # entrys = [self.entry_title, self.entry_date, self.entry_remark, self.entry_money, self.entry_account,
+        #           self.entry_seller, self.entry_category_p, self.entry_category_c, self.entry_member]
+        entrys = [self.entry_category_p, self.entry_category_c, self.entry_member]
+        if db_v in ["v_payments_info", "v_incomes_info"]:
+            for item in entrys:
+                item.config(state=tb.NORMAL)
+        elif db_v in ["v_borrows_info", "v_lends_info", "v_repayments_info"]:
+            for item in entrys:
+                item.config(state=tb.DISABLED)
+
+
+class BackupFrame(tb.LabelFrame):
+    """用于从excel文件导入以及导出到excel"""
+    def __init__(self, master=None):
+        tb.LabelFrame.__init__(self, master)
+        # 创建聊天记录查看页面
+        self.root = tb.LabelFrame(master, text='备份与恢复')  # 定义内部变量root
+        self.pwin = master  # 父容器对象引用，方便后面调用父容器实例方法
+        self.root.grid()
+        self.top = tb.Frame(self.root)
+        self.top.grid()
+        self.option = tb.Frame(self.root)
+        self.option.grid()
+        # 链接数据库
+        self.conn = sqlite3.connect(settings.DB_PATH)
+        self.c = self.conn.cursor()
+        # excel 文件路径
+        self.excel_path1 = tb.StringVar()  # 导入文件路径
+        self.excel_path2 = tb.StringVar()  # 导出文件路径
+        tb.Label(self.top, text="excel文件路径:").grid(row=0, column=0)
+        tb.Entry(self.top, textvariable=self.excel_path1, width=100).grid(row=0, column=1)
+        tb.Button(self.top, text="浏览", command=self.select_filepath_1,bootstyle="info-outline").grid(row=0, column=2)
+        tb.Button(self.top, text="导入到数据库", command=self.insert_db,bootstyle="success-outline").grid(row=0, column=3)
+        # tb.Button(self.top, text="导入到数据库", command=self.get_ids_from_db).grid(row=0, column=3)
+
+        tb.Label(self.top, text="导出路径:").grid(row=1, column=0)
+        tb.Entry(self.top, textvariable=self.excel_path2, width=100).grid(row=1, column=1)
+        tb.Button(self.top, text="浏览", command=self.select_filepath_2,bootstyle="info-outline").grid(row=1, column=2)
+        tb.Button(self.top, text="导出到excel", command=self.export_excel,bootstyle="success-outline").grid(row=1, column=3)
+
+    def select_filepath_1(self):
+        """用于通过浏览按钮获取导入文件路径"""
+        file_path = askopenfilename()
+        self.excel_path1.set(file_path)
+
+    def select_filepath_2(self):
+        """用于通过浏览按钮获取导出文件路径"""
+        files = [('Excel files', '*.xlsx')]  # 文件类型
+        time_now = time.strftime("%Y-%m-%d-%H-%M-%S", time.localtime())
+        initial_file_name = "收支记录 %s" % time_now
+        file_path = asksaveasfilename(initialfile=initial_file_name, filetypes=files, defaultextension=files)
+        # file_path = asksaveasfilename()
+        self.excel_path2.set(file_path)
+
+    def insert_db(self):
+        """用于将数据从excel表中插入到数据库"""
+        start_time = time.time()
+        file_path = self.excel_path1.get()
+        logger.info("导入的excel文件路径:%s" % file_path)
+        self.get_ids_from_db()
+        # sheet_names = ["支出", "收入", "借入", "借出", "还款", "记录"]
+        try:
+            # 读取 excel文件内容
+            logger.info("正在读取excel文件内容")
+            r = excel.ReadExcel(file_path)
+            result = r.read_data()
+            # logger.debug("result: %s" % result)
+            func_dict = {"支出": self.insert_db_payment,
+                         "收入": self.insert_db_income,
+                         "借入": self.insert_db_borrow,
+                         "借出": self.insert_db_lend,
+                         "还款": self.insert_db_repayment,
+                         "记录": self.insert_db_note
+                         }
+            for sheet in result:
+                self.data_list = result[sheet]
+                for data in self.data_list:
+                    func_dict[sheet](data)
+        except Exception as e:
+            print(traceback.print_exc())
+            logger.error("导入excel数据出错%s" % e)
+            mBox.showerror("失败", message="从%s 恢复到数据库失败！" % file_path)
+        else:
+            logger.info("导入excel数据成功!")
+            logger.info("导入%s到数据库完成，用时%ss" % (file_path, time.time() - start_time))
+            mBox.showinfo("成功", message="从%s 恢复到数据库完成！" % file_path)
+
+    def get_id_db(self, sql, paras):
+        """用于从数据库中查找id
+        sql :sql语句
+        paras : 元组参数
+        """
+        self.c.execute(sql, paras)
+        results = self.c.fetchall()
+        if results:
+            return results[0][0]
+        else:
+            return
+
+    def get_id_from_result(self, search_table, search_para):
+        """从已经查好的数据中直接获取id"""
+        if search_table not in self.result:
+            # 搜索内容不在result结果集key中
+            return
+
+        if search_table in ["pay_categorys", "income_categorys"]:
+            for item in self.result[search_table]:
+                if search_para[0] == item and search_para[1] == self.result[search_table][item][1]:
+                    return self.result[search_table][item][0]
+            else:  # 如果数据库没有，则新建避免数据被设置为null丢失源信息数据
+                if search_para[0] is None:
+                    return
+                logger.info("insert into %s (title,pid) " % search_table + "values (%s,%s)" % (search_para))
+                self.c.execute("insert into %s (title,pid) values (?,?)" % search_table, (search_para[0], search_para[1]))
+                self.conn.commit()
+        else:
+            if search_para in self.result[search_table]:
+                return self.result[search_table][search_para]
+            else:  # 如果数据库没有，则新建避免数据被设置为null丢失源信息数据
+                if search_para is None:  # 如果title为None则不插入
+                    return
+                self.c.execute("insert into %s (title) values (?)" % search_table, (search_para,))
+                self.conn.commit()
+                logger.info("insert into %s (title) " % search_table + "values (%s)" % search_para)
+        self.get_ids_from_db()  # 更新数据
+        return self.get_id_from_result(search_table, search_para)  # 重新调用查询，以获取本次插入数据库的id
+
+    def get_data(self, key, data):
+        """data : excel中每一行的数据字典"""
+        # 从excel读取的数据中提取所需数据 用于避免 比如excel"收入"表中没有"交易方"这一列导致直接data["交易方"] 报KeyError: '交易方'
+        if key in data:
+            return data[key]
+        else:
+            return
+
+    def get_ids_from_db(self):
+        """从数据库中一次查询获取所有id，避免每次都查询数据库"""
+        self.result = {
+            "accounts": {},
+            "sellers": {},
+            "pay_categorys": {},
+            "income_categorys": {},
+            "members": {}}
+
+        self.c.execute("select title,id from accounts")
+        ret = self.c.fetchall()
+        logger.debug("ret:%s" % ret)
+        for title, id_value in ret:
+            self.result["accounts"][title] = id_value
+
+        self.c.execute("select title,id from sellers")
+        ret = self.c.fetchall()
+        logger.debug("ret:%s" % ret)
+        for title, id_value in ret:
+            self.result["sellers"][title] = id_value
+
+        self.c.execute("select title,id,pid from pay_categorys")
+        ret = self.c.fetchall()
+        logger.debug("ret:%s" % ret)
+        for title, nid, pid in ret:
+            self.result["pay_categorys"][title] = (nid, pid)
+
+        self.c.execute("select title,id,pid from income_categorys")
+        ret = self.c.fetchall()
+        logger.debug("ret:%s" % ret)
+        for title, nid, pid in ret:
+            self.result["income_categorys"][title] = (nid, pid)
+
+        self.c.execute("select title,id from members")
+        ret = self.c.fetchall()
+        logger.debug("ret:%s" % ret)
+        for title, id_value in ret:
+            self.result["members"][title] = id_value
+
+        # logger.debug("result:%s" % self.result)
+
+    def insert_db_payment(self, data):
+        # 用于将excel文件中支出的信息记录到数据库中
+        create_time = self.get_data("创建时间", data)
+        modify_time = self.get_data("修改时间", data)
+        if not create_time:
+            create_time = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())  # 当前时间
+        note_date = changeStrToDate(data["日期"])
+        title = data["事项"]
+        if title is None:
+            # 防止空单元格导致写入数据库报错
+            return
+        remark = self.get_data("备注", data)
+        money = self.get_data("支出金额", data)
+        account = self.get_data("支出途径", data)
+        seller = self.get_data("交易方", data)
+        category_p = self.get_data("一级分类", data)
+        category_c = self.get_data("二级分类", data)
+        member = self.get_data("对象", data)
+        # account_id = self.get_id_db("select id from accounts where title=?", (account,))
+        # seller_id = self.get_id_db("select id from sellers where title=?", (seller,))
+        # category_pid = self.get_id_db("select id from pay_categorys where title=?", (category_p,))
+        # category_cid = self.get_id_db("select id from pay_categorys where title=? and pid=?", (category_c, category_pid))
+        # member_id = self.get_id_db("select id from members where title=?", (member,))
+        account_id = self.get_id_from_result("accounts", account)
+        seller_id = self.get_id_from_result("sellers", seller)
+        category_pid = self.get_id_from_result("pay_categorys", (category_p, None))
+        category_cid = self.get_id_from_result("pay_categorys", (category_c, category_pid))
+        member_id = self.get_id_from_result("members", member)
+        sql = "insert into payments(note_date, title, remark, money, account_id, seller_id, category_pid, category_cid, member_id,create_time,modify_time) values(?,?,?,?,?,?,?,?,?,?,?)"
+        self.c.execute(sql, (
+            note_date, title, remark, money, account_id, seller_id, category_pid, category_cid, member_id, create_time, modify_time))
+        self.conn.commit()
+
+    def insert_db_income(self, data):
+        # 用于将excel文件中收入的信息记录到数据库中
+        create_time = self.get_data("创建时间", data)
+        modify_time = self.get_data("修改时间", data)
+        if not create_time:
+            create_time = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())  # 当前时间
+        note_date = changeStrToDate(data["日期"])
+        title = data["事项"]
+        if title is None:
+            # 防止空单元格导致写入数据库报错
+            return
+        remark = self.get_data("备注", data)
+        money = self.get_data("收入金额", data)
+        account = self.get_data("收入途径", data)
+        seller = self.get_data("交易方", data)
+        category_p = self.get_data("一级分类", data)
+        category_c = self.get_data("二级分类", data)
+        member = self.get_data("对象", data)
+        # account_id = self.get_id_db("select id from accounts where title is ?", (account,))
+        # seller_id = self.get_id_db("select id from sellers where title is ?", (seller,))
+        # category_pid = self.get_id_db("select id from income_categorys where title is ?", (category_p,))
+        # category_cid = self.get_id_db("select id from income_categorys where title is ? and pid is ?",
+        #                                (category_c, category_pid))
+        # member_id = self.get_id_db("select id from members where title=?", (member,))
+
+        account_id = self.get_id_from_result("accounts", account)
+        seller_id = self.get_id_from_result("sellers", seller)
+        category_pid = self.get_id_from_result("income_categorys", (category_p, None))
+        category_cid = self.get_id_from_result("income_categorys", (category_c, category_pid))
+        member_id = self.get_id_from_result("members", member)
+        sql = "insert into incomes(note_date, title, remark, money, account_id, seller_id, category_pid, category_cid, member_id,create_time,modify_time) values(?,?,?,?,?,?,?,?,?,?,?)"
+        self.c.execute(sql, (
+            note_date, title, remark, money, account_id, seller_id, category_pid, category_cid, member_id,create_time,modify_time))
+        self.conn.commit()
+
+    def insert_db_borrow(self, data):
+        # 用于将excel文件中支出的信息记录到数据库中
+        create_time = self.get_data("创建时间", data)
+        modify_time = self.get_data("修改时间", data)
+        if not create_time:
+            create_time = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())  # 当前时间
+        note_date = changeStrToDate(data["日期"])
+        title = data["事项"]
+        if title is None:
+            # 防止空单元格导致写入数据库报错
+            return
+        remark = self.get_data("备注", data)
+        money = self.get_data("金额", data)
+        account = self.get_data("账户", data)
+        seller = self.get_data("交易方", data)
+        # account_id = self.get_id_db("select id from accounts where title=?", (account,))
+        # seller_id = self.get_id_db("select id from sellers where title=?", (seller,))
+        account_id = self.get_id_from_result("accounts", account)
+        seller_id = self.get_id_from_result("sellers", seller)
+        sql = "insert into borrows(note_date, title, remark, money, account_id, seller_id,create_time,modify_time) values(?,?,?,?,?,?,?,?)"
+        self.c.execute(sql, (note_date, title, remark, money, account_id, seller_id,create_time,modify_time))
+        self.conn.commit()
+
+    def insert_db_lend(self, data):
+        # 用于将excel文件中支出的信息记录到数据库中
+        create_time = self.get_data("创建时间", data)
+        modify_time = self.get_data("修改时间", data)
+        if not create_time:
+            create_time = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())  # 当前时间
+        note_date = changeStrToDate(data["日期"])
+        title = data["事项"]
+        if title is None:
+            # 防止空单元格导致写入数据库报错
+            return
+        remark = self.get_data("备注", data)
+        money = self.get_data("金额", data)
+        account = self.get_data("账户", data)
+        seller = self.get_data("交易方", data)
+        # account_id = self.get_id_db("select id from accounts where title=?", (account,))
+        # seller_id = self.get_id_db("select id from sellers where title=?", (seller,))
+        account_id = self.get_id_from_result("accounts", account)
+        seller_id = self.get_id_from_result("sellers", seller)
+        sql = "insert into lends(note_date, title, remark, money, account_id, seller_id,create_time,modify_time) values(?,?,?,?,?,?,?,?)"
+        self.c.execute(sql, (note_date, title, remark, money, account_id, seller_id,create_time,modify_time))
+        self.conn.commit()
+
+    def insert_db_repayment(self, data):
+        # 用于将excel文件中支出的信息记录到数据库中
+        create_time = self.get_data("创建时间", data)
+        modify_time = self.get_data("修改时间", data)
+        if not create_time:
+            create_time = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())  # 当前时间
+        note_date = changeStrToDate(data["日期"])
+        title = data["事项"]
+        if title is None:
+            # 防止空单元格导致写入数据库报错
+            return
+        remark = self.get_data("备注", data)
+        money = self.get_data("金额", data)
+        account = self.get_data("账户", data)
+        seller = self.get_data("交易方", data)
+        # account_id = self.get_id_db("select id from accounts where title=?", (account,))
+        # seller_id = self.get_id_db("select id from sellers where title=?", (seller,))
+        account_id = self.get_id_from_result("accounts", account)
+        seller_id = self.get_id_from_result("sellers", seller)
+        sql = "insert into repayments(note_date, title, remark, money, account_id, seller_id,create_time,modify_time) values(?,?,?,?,?,?,?,?)"
+        self.c.execute(sql, (note_date, title, remark, money, account_id, seller_id,create_time,modify_time))
+        self.conn.commit()
+
+    def insert_db_note(self, data):
+        # 用于将excel文件中支出的信息记录到数据库中
+        create_time = self.get_data("创建时间", data)
+        modify_time = self.get_data("修改时间", data)
+        if not create_time:
+            create_time = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())  # 当前时间
+        note_date = changeStrToDate(data["日期"])
+        title = self.get_data("事项", data)
+        if title is None:
+            # 防止空单元格导致写入数据库报错
+            return
+        remark = self.get_data("记录", data)
+        # if remark:
+        #     remark = "充值后" + remark
+        remark2 = self.get_data("额外备注", data)
+        sql = "insert into notes(note_date, title, remark, remark2,create_time,modify_time) values(?,?,?,?,?,?)"
+        self.c.execute(sql, (note_date, title, remark, remark2, create_time, modify_time))
+        self.conn.commit()
+
+    def export_excel(self):
+        """从数据库获取所有交易记录并写出到excel文件"""
+        # 显示交易详情
+        file_path = self.excel_path2.get()
+        logger.info("导出的excel文件路径:%s" % file_path)
+        result = {}
+        sql = "select note_date,title,money,account,remark,seller,category_p,category_c,member,create_time,modify_time from v_payments_info order by note_date;"
+        self.c.execute(sql)
+        result["支出"] = self.c.fetchall()
+        sql = "select note_date,title,money,account,remark,seller,category_p,category_c,member,create_time,modify_time from v_incomes_info order by note_date;"
+        self.c.execute(sql)
+        result["收入"] = self.c.fetchall()
+        sql = "select note_date,title,money,account,remark,seller,create_time,modify_time from v_borrows_info order by note_date;"
+        self.c.execute(sql)
+        result["借入"] = self.c.fetchall()
+        sql = "select note_date,title,money,account,remark,seller,create_time,modify_time from v_lends_info order by note_date;"
+        self.c.execute(sql)
+        result["借出"] = self.c.fetchall()
+        sql = "select note_date,title,money,account,remark,seller,create_time,modify_time from v_repayments_info order by note_date;"
+        self.c.execute(sql)
+        result["还款"] = self.c.fetchall()
+        sql = "select note_date,title,remark,remark2,create_time,modify_time from v_notes_info order by note_date;"
+        self.c.execute(sql)
+        result["记录"] = self.c.fetchall()
+        # print(result)
+        logger.info("导出数据到excel文件:%s" % file_path)
+        w = excel.WriteExcel(file_path, result)
+        w.write_data()
+        logger.info("导出数据到excel成功！")
+        mBox.showinfo("成功", message="导出到%s 完成！" % file_path)
+
+
